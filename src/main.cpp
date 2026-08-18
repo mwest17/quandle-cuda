@@ -23,7 +23,6 @@ struct State
     int n = 0;
     int assignedCount = 0;
     int table[MAX_TABLE_SIZE] = {};
-    int assigned[MAX_TABLE_SIZE] = {}; // TODO** Switch to sentinel value for unassigned cells to avoid extra array
     bool valid = true;
     bool complete = false;
 };
@@ -48,59 +47,34 @@ __host__ __device__ inline int stateIndex(int row, int col, int n)
 
 __host__ __device__ inline bool isAssigned(const State& s, int row, int col)
 {
-    return s.assigned[stateIndex(row, col, s.n)] != 0;
+    return s.table[stateIndex(row, col, s.n)] != -1;
 }
 
-__host__ __device__ inline int getCell(const State& s, int row, int col)
+__host__ __device__ inline int op(const State& s, int row, int col)
 {
     return s.table[stateIndex(row, col, s.n)];
 }
+
+__host__ __device__ inline int op_inv(const State& s, int z, int y)
+{
+    int x = -1;
+    for (int i = 0; i < s.n; i++)
+    {
+        if (op(s, i, y) == z)
+        {
+            x = i;
+            break;
+        }
+    }
+    return x;
+}   
 
 __host__ __device__ inline void setCell(State& s, int row, int col, int value)
 {
     const int idx = stateIndex(row, col, s.n);
     s.table[idx] = value;
-    s.assigned[idx] = 1;
     s.assignedCount += 1;
     s.complete = (s.assignedCount == s.n * s.n);
-}
-
-__host__ __device__ inline bool partialQuandleAxiom1(const State& s, int a, int b)
-{
-    if (!isAssigned(s, a, b))
-        return true;
-
-    const int lhs = getCell(s, a, b);
-    const int rhs = a;
-    if (isAssigned(s, lhs, lhs) && getCell(s, lhs, lhs) != lhs)
-        return false;
-
-    if (isAssigned(s, a, a) && getCell(s, a, a) != a)
-        return false;
-
-    if (isAssigned(s, a, b) && isAssigned(s, lhs, b))
-    {
-        if (getCell(s, lhs, b) != a)
-            return false;
-    }
-
-    return lhs == rhs || !isAssigned(s, a, a);
-}
-
-__host__ __device__ inline bool partialQuandleAxiom2(const State& s, int a, int b)
-{
-    if (!isAssigned(s, a, b))
-        return true;
-
-    const int left = getCell(s, a, b);
-    const int row = left;
-    if (isAssigned(s, row, b))
-    {
-        if (getCell(s, row, b) != a)
-            return false;
-    }
-
-    return true;
 }
 
 __host__ __device__ inline bool deviceIsFeasible(const State& s)
@@ -111,12 +85,6 @@ __host__ __device__ inline bool deviceIsFeasible(const State& s)
         {
             if (!isAssigned(s, i, j))
                 continue;
-
-            if (!partialQuandleAxiom1(s, i, j))
-                return false;
-
-            if (!partialQuandleAxiom2(s, i, j))
-                return false;
         }
     }
 
@@ -128,7 +96,7 @@ __host__ __device__ inline bool deviceIsFeasible(const State& s)
             if (!isAssigned(s, r, c))
                 continue;
 
-            int value = getCell(s, r, c);
+            int value = op(s, r, c);
             if (value < 0 || value >= s.n)
                 return false;
             if (seen[value])
@@ -145,7 +113,7 @@ __host__ __device__ inline bool deviceIsFeasible(const State& s)
             if (!isAssigned(s, r, c))
                 continue;
 
-            int value = getCell(s, r, c);
+            int value = op(s, r, c);
             if (value < 0 || value >= s.n)
                 return false;
             if (seen[value])
@@ -169,51 +137,44 @@ bool isComplete(const State& s)
 
 bool isValidQuandle(const State& s)
 {
-    if (!isComplete(s))
-        return false;
-
-    for (int a = 0; a < s.n; ++a)
+    for (int x = 0; x < s.n; ++x)
     {
-        if (getCell(s, a, a) != a)
+        if (op(s, x, x) != x)
             return false;
-
-        for (int b = 0; b < s.n; ++b)
-        {
-            const int x = getCell(s, a, b);
-            if (x < 0 || x >= s.n)
-                return false;
-
-            if (getCell(s, x, b) != a)
-                return false;
-
-            if (getCell(s, b, b) != b)
-                return false;
-        }
     }
 
-    for (int r = 0; r < s.n; ++r)
+    for (int x = 0; x < s.n; x++)
     {
-        int rowSeen[MAX_ORDER] = {};
-        for (int c = 0; c < s.n; ++c)
+        for (int y = 0; y < s.n; y++)
         {
-            const int value = getCell(s, r, c);
-            if (rowSeen[value])
+            if (op_inv(s, op(s, x, y), y) != x)
                 return false;
-            rowSeen[value] = 1;
         }
     }
 
-    for (int c = 0; c < s.n; ++c)
+    for (int x = 0; x < s.n; x++)
     {
-        int colSeen[MAX_ORDER] = {};
-        for (int r = 0; r < s.n; ++r)
+        for (int y = 0; y < s.n; y++)
         {
-            const int value = getCell(s, r, c);
-            if (colSeen[value])
-                return false;
-            colSeen[value] = 1;
+            for (int z = 0; z < s.n; z++)
+            {
+                if (op(s, op(s, x, y), z) != op(s, op(s, x, z), op(s, y, z)))
+                    return false;
+            }
         }
     }
+
+    // for (int r = 0; r < s.n; ++r)
+    // {
+    //     int rowSeen[MAX_ORDER] = {};
+    //     for (int c = 0; c < s.n; ++c)
+    //     {
+    //         const int value = op(s, r, c);
+    //         if (rowSeen[value])
+    //             return false;
+    //         rowSeen[value] = 1;
+    //     }
+    // }
 
     return true;
 }
@@ -244,19 +205,10 @@ std::vector<State> generateCandidates(const State& s, const Cell& cell)
     {
         State child = s;
         setCell(child, cell.row, cell.col, value);
-        if (isFeasible(child)) // TODO** Write feasability check
-            out.push_back(child);
+        // if (isFeasible(child))
+        out.push_back(child);
     }
     return out;
-}
-
-State applyAssignment(const State& s, const Cell& cell, int value)
-{
-    State child = s;
-    setCell(child, cell.row, cell.col, value);
-    child.valid = true;
-    child.complete = (child.assignedCount == s.n * s.n);
-    return child;
 }
 
 // __global__ void pruneAndExpandKernel(
@@ -268,7 +220,7 @@ State applyAssignment(const State& s, const Cell& cell, int value)
 //     const int tid = blockIdx.x * blockDim.x + threadIdx.x;
 //     if (tid >= inCount)
 //         return;
-
+//
 //     const State s = inStates[tid];
 //     if (!deviceIsFeasible(s))
 //     {
@@ -277,7 +229,7 @@ State applyAssignment(const State& s, const Cell& cell, int value)
 //         outCounts[tid] = 0;
 //         return;
 //     }
-
+//
 //     if (isComplete(s))
 //     {
 //         if (isValidQuandle(s))
@@ -293,11 +245,11 @@ State applyAssignment(const State& s, const Cell& cell, int value)
 //         outCounts[tid] = 1;
 //         return;
 //     }
-
+//
 //     Cell cell = chooseNextUnassignedCell(s);
 //     State children[MAX_CHILDREN_PER_THREAD];
 //     int childCount = 0;
-
+//
 //     for (int value = 0; value < s.n && childCount < MAX_CHILDREN_PER_THREAD; ++value)
 //     {
 //         State child = s;
@@ -307,7 +259,7 @@ State applyAssignment(const State& s, const Cell& cell, int value)
 //             children[childCount++] = child;
 //         }
 //     }
-
+//
 //     if (childCount == 0)
 //     {
 //         outResults[tid * MAX_CHILDREN_PER_THREAD].kind = Result::INVALID;
@@ -315,52 +267,52 @@ State applyAssignment(const State& s, const Cell& cell, int value)
 //         outCounts[tid] = 0;
 //         return;
 //     }
-
+//
 //     for (int i = 0; i < childCount; ++i)
 //     {
 //         outResults[tid * MAX_CHILDREN_PER_THREAD + i].kind = Result::PARTIAL_VALID;
 //         outResults[tid * MAX_CHILDREN_PER_THREAD + i].state = children[i];
 //     }
-
+//
 //     for (int i = childCount; i < MAX_CHILDREN_PER_THREAD; ++i)
 //     {
 //         outResults[tid * MAX_CHILDREN_PER_THREAD + i].kind = Result::INVALID;
 //     }
-
+//
 //     outCounts[tid] = childCount;
 // }
-
+//
 // std::vector<Result> runGpuBatch(const std::vector<State>& batch)
 // {
 //     if (batch.empty())
 //         return {};
-
+//
 //     State* d_states = nullptr;
 //     Result* d_results = nullptr;
 //     int* d_counts = nullptr;
-
+//
 //     const size_t stateBytes = batch.size() * sizeof(State);
 //     const size_t resultBytes = batch.size() * MAX_CHILDREN_PER_THREAD * sizeof(Result);
 //     const size_t countBytes = batch.size() * sizeof(int);
-
+//
 //     cudaMalloc(&d_states, stateBytes);
 //     cudaMalloc(&d_results, resultBytes);
 //     cudaMalloc(&d_counts, countBytes);
-
+//
 //     cudaMemcpy(d_states, batch.data(), stateBytes, cudaMemcpyHostToDevice);
-
+//
 //     const int threadsPerBlock = 256;
 //     const int blocks = static_cast<int>((batch.size() + threadsPerBlock - 1) / threadsPerBlock);
-
+//
 //     pruneAndExpandKernel<<<blocks, threadsPerBlock>>>(d_states, static_cast<int>(batch.size()), d_results, d_counts);
 //     cudaDeviceSynchronize();
-
+//
 //     std::vector<Result> hostResults(batch.size() * MAX_CHILDREN_PER_THREAD);
 //     cudaMemcpy(hostResults.data(), d_results, resultBytes, cudaMemcpyDeviceToHost);
-
+//
 //     std::vector<int> counts(batch.size());
 //     cudaMemcpy(counts.data(), d_counts, countBytes, cudaMemcpyDeviceToHost);
-
+//
 //     std::vector<Result> filtered;
 //     for (size_t i = 0; i < batch.size(); ++i)
 //     {
@@ -371,11 +323,11 @@ State applyAssignment(const State& s, const Cell& cell, int value)
 //                 filtered.push_back(r);
 //         }
 //     }
-
+//
 //     cudaFree(d_states);
 //     cudaFree(d_results);
 //     cudaFree(d_counts);
-
+//
 //     return filtered;
 // }
 
@@ -393,7 +345,6 @@ std::vector<State> buildInitialRoots(int n)
         for (int j = 0; j < n; ++j)
         {
             s.table[stateIndex(i, j, n)] = -1;
-            s.assigned[stateIndex(i, j, n)] = 0;
         }
     }
 
@@ -450,10 +401,10 @@ void searchHybrid(int n)
 
             if (isComplete(s))
             {
-                // if (isValidQuandle(s))
-                // {
+                if (isValidQuandle(s))
+                {
                     completeStates.push_back(s);
-                // }
+                }
                 continue;
             }
 
