@@ -1,0 +1,43 @@
+CXX := g++
+CPPFLAGS := -Iincl
+CXXFLAGS := -std=c++17 -O2 -Wall
+
+TARGET := quandle_cpu
+SRC := src/main_cpu.cpp
+OBJ := main_cpu.o
+
+DEBUG_TARGET := quandle_debug
+DEBUG_SRC := src/main_debug.cpp
+DEBUG_OBJ := main_debug.o
+
+.PHONY: all clean run debug
+
+all: $(TARGET)
+
+$(OBJ): $(SRC)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(TARGET): $(OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@
+
+debug: $(DEBUG_TARGET)
+
+$(DEBUG_OBJ): $(DEBUG_SRC)
+	$(CXX) $(CXXFLAGS) $(CPPFLAGS) -c $< -o $@
+
+$(DEBUG_TARGET): $(DEBUG_OBJ)
+	$(CXX) $(CXXFLAGS) $^ -o $@
+
+run: $(TARGET)
+	./$(TARGET)
+
+run-debug: $(DEBUG_TARGET)
+	./$(DEBUG_TARGET)
+
+clean:
+	@if exist $(OBJ) del $(OBJ)
+	@if exist $(DEBUG_OBJ) del $(DEBUG_OBJ)
+	@if exist $(TARGET).exe del $(TARGET).exe
+	@if exist $(TARGET) del $(TARGET)
+	@if exist $(DEBUG_TARGET).exe del $(DEBUG_TARGET).exe
+	@if exist $(DEBUG_TARGET) del $(DEBUG_TARGET)
