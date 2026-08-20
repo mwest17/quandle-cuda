@@ -13,17 +13,25 @@ constexpr int N = 3;
 constexpr int TABLE_SIZE = N * N;
 constexpr int MAX_CHILDREN_PER_THREAD = N;
 
+typedef int8_t element;
+typedef int16_t index;
+
 struct Cell
 {
-    int row = -1;
-    int col = -1;
+    element row = -1;
+    element col = -1;
+};
+
+struct Orbit
+{
+    element orb[N] = {-1};
 };
 
 struct State
 {
     // TODO** Optimize this representation for memory
-    int assignedCount = 0;
-    int table[TABLE_SIZE] = {-1}; // Bitpack the structure maybe?
+    index assignedCount = 0;
+    element table[TABLE_SIZE] = {-1}; // Bitpack the structure maybe?
     Cell lastEntered = {-1, -1};
 };
 
@@ -40,25 +48,25 @@ struct Result
     State state{};
 };
 
-__host__ __device__ inline int stateIndex(int row, int col)
+__host__ __device__ inline index stateIndex(element row, element col)
 {
     return row * N + col;
 }
 
-__host__ __device__ inline bool isAssigned(const State& s, int row, int col)
+__host__ __device__ inline bool isAssigned(const State& s, element row, element col)
 {
     return s.table[stateIndex(row, col)] != -1;
 }
 
-__host__ __device__ inline int op(const State& s, int row, int col)
+__host__ __device__ inline index op(const State& s, element row, element col)
 {
     return s.table[stateIndex(row, col)];
 }
 
-__host__ __device__ inline int op_inv(const State& s, int z, int y)
+__host__ __device__ inline index op_inv(const State& s, element z, element y)
 {
-    int x = -1;
-    for (int i = 0; i < N; i++)
+    element x = -1;
+    for (element i = 0; i < N; i++)
     {
         if (op(s, i, y) == z)
         {
@@ -69,17 +77,17 @@ __host__ __device__ inline int op_inv(const State& s, int z, int y)
     return x;
 }   
 
-__host__ __device__ inline void setCell(State& s, int row, int col, int value)
+__host__ __device__ inline void setCell(State& s, element row, element col, element value)
 {
-    const int idx = stateIndex(row, col);
+    const index idx = stateIndex(row, col);
     s.table[idx] = value;
     s.assignedCount += 1;
     s.lastEntered = {row, col};
 }
 
-__host__ __device__ inline bool verifyPartialAxiomTwo(const State& s, short row, short col, short k)
+__host__ __device__ inline bool verifyPartialAxiomTwo(const State& s, element row, element col, element k)
 {
-    for (int x = 0; x < N; x++)
+    for (element x = 0; x < N; x++)
     {
         if (op(s, x, col) == k && x != row)
         {
@@ -91,20 +99,18 @@ __host__ __device__ inline bool verifyPartialAxiomTwo(const State& s, short row,
     return true;
 }
 
-__host__ __device__ inline bool ruleOne(State& s, short row, short col, short k)
+__host__ __device__ inline bool ruleOne(State& s, element row, element col, element k)
 {
-    for (short a = 0; a < N; a++)
+    for (element a = 0; a < N; a++)
     {
-        short j_a = op(s, row, a);
-        short i_a = op(s, col, a);
+        element j_a = op(s, row, a);
+        element i_a = op(s, col, a);
 
         // Rule 1: k * a = (j * a) * (i * a)
         if (j_a != -1 && i_a != -1)
-        {
-            std::cout << "j_a: " << j_a << " i_a: " << i_a << std::endl;
-            
-            short j_a_i_a = op(s, j_a, i_a);
-            short k_a = op(s, k, a);
+        {   
+            element j_a_i_a = op(s, j_a, i_a);
+            element k_a = op(s, k, a);
 
             // (j * a) * (i * a) cannot be retrieved and k * a can be retrieved
             if (j_a_i_a == -1 && k_a != -1) // 1
@@ -133,17 +139,17 @@ __host__ __device__ inline bool ruleOne(State& s, short row, short col, short k)
     return true;
 }
 
-__host__ __device__ inline bool ruleTwo(State& s, short row, short col, short k)
+__host__ __device__ inline bool ruleTwo(State& s, element row, element col, element k)
 {
-    for (short a = 0; a < N; a++)
+    for (element a = 0; a < N; a++)
     {
-        short a_j = op(s, a, row);
-        short a_i = op(s, a, col);
+        element a_j = op(s, a, row);
+        element a_i = op(s, a, col);
 
         if (a_j != -1 && a_i != -1)
         {
-            short a_j_i = op(s, a_j, col);
-            short a_i_k = op(s, a_i, k);
+            element a_j_i = op(s, a_j, col);
+            element a_i_k = op(s, a_i, k);
             
             if (a_i_k == -1 && a_j_i != -1) // 1
             {
@@ -169,17 +175,17 @@ __host__ __device__ inline bool ruleTwo(State& s, short row, short col, short k)
     return true;
 }
 
-__host__ __device__ inline bool ruleThree(State& s, short row, short col, short k)
+__host__ __device__ inline bool ruleThree(State& s, element row, element col, element k)
 {
-    for (short a = 0; a < N; a++)
+    for (element a = 0; a < N; a++)
     {
-        short j_a = op(s, row, a);
-        short a_i = op(s, a, col);
+        element j_a = op(s, row, a);
+        element a_i = op(s, a, col);
 
         if (j_a != -1 && a_i != -1)
         {
-            short j_a_i = op(s, j_a, col);
-            short k_a_i = op(s, k, a_i);
+            element j_a_i = op(s, j_a, col);
+            element k_a_i = op(s, k, a_i);
 
             if (k_a_i == -1 && j_a_i != -1) // 1
             {
@@ -205,20 +211,20 @@ __host__ __device__ inline bool ruleThree(State& s, short row, short col, short 
     return true;
 }
 
-__host__ __device__ inline bool ruleFour(State& s, short row, short col, short k)
+__host__ __device__ inline bool ruleFour(State& s, element row, element col, element k)
 {
-    for (short a = 0; a < N; a++)
+    for (element a = 0; a < N; a++)
     {
-        short j_inv_a = op_inv(s, row, a);
-        short i_inv_a = op_inv(s, col, a);
+        element j_inv_a = op_inv(s, row, a);
+        element i_inv_a = op_inv(s, col, a);
 
         if (j_inv_a != -1 && i_inv_a != -1)
         {
-            short j_inv_a_i_inv_a = op(s, j_inv_a, i_inv_a);
+            element j_inv_a_i_inv_a = op(s, j_inv_a, i_inv_a);
 
             if (j_inv_a_i_inv_a != -1)
             {
-                short j_inv_a_i_inv_a_a = op(s, j_inv_a_i_inv_a, a);
+                element j_inv_a_i_inv_a_a = op(s, j_inv_a_i_inv_a, a);
 
                 if (j_inv_a_i_inv_a_a == -1) // 1
                 {
@@ -238,20 +244,20 @@ __host__ __device__ inline bool ruleFour(State& s, short row, short col, short k
     return true;
 }
 
-__host__ __device__ inline bool ruleFive(State& s, short row, short col, short k)
+__host__ __device__ inline bool ruleFive(State& s, element row, element col, element k)
 {
-    for (short a = 0; a < N; a++)
+    for (element a = 0; a < N; a++)
     {
-        short j_inv_a = op_inv(s, row, a);
-        short a_i = op(s, a, col);
+        element j_inv_a = op_inv(s, row, a);
+        element a_i = op(s, a, col);
 
         if (j_inv_a != -1 && a_i != -1)
         {
-            short j_inv_a_i = op(s, j_inv_a, col);
+            element j_inv_a_i = op(s, j_inv_a, col);
 
             if (j_inv_a_i != -1)
             {
-                short j_inv_a_i_a_i = op(s, j_inv_a_i, a_i);
+                element j_inv_a_i_a_i = op(s, j_inv_a_i, a_i);
 
                 if (j_inv_a_i_a_i == -1) // 1
                 {
@@ -279,9 +285,9 @@ __host__ __device__ inline bool isFeasible(State& s)
 // Ensure that no orbits are expanded or broken
 // OPTIONAL: Ensure that cohen conditions are still met
 {
-    short row = s.lastEntered.row;
-    short col = s.lastEntered.col;
-    short k = op(s, row, col);
+    element row = s.lastEntered.row;
+    element col = s.lastEntered.col;
+    element k = op(s, row, col);
 
     bool result = verifyPartialAxiomTwo(s, row, col, k);
 
@@ -300,21 +306,52 @@ __host__ __device__ inline bool isFeasible(State& s)
     if (result)
         result = ruleFive(s, row, col, k);
 
+#ifdef COHEN
+    if (result)
+        result = cohenParitalCheck();
+#endif
+
     return result;
 }
 
-bool isComplete(const State& s)
+inline bool isComplete(const State& s)
 {
     return s.assignedCount == TABLE_SIZE;
 }
 
-bool isValidQuandle(const State& s)
+#ifdef COHEN
+inline bool isCohen(const State& s)
 {
-    for (int x = 0; x < N; x++)
+    // Get all orbits
+
+
+    // Check if s / orb is isomoprhism to all others
+    // Just do the half matrix pyramid approach to compare
+}
+#endif
+
+inline bool isValidQuandle(const State& s)
+{
+    // for (int x = 0; x < N; ++x)
+    // {
+    //     if (op(s, x, x) != x)
+    //         return false;
+    // }
+
+    // for (int x = 0; x < N; x++)
+    // {
+    //     for (int y = 0; y < N; y++)
+    //     {
+    //         if (op_inv(s, op(s, x, y), y) != x)
+    //             return false;
+    //     }
+    // }
+
+    for (element x = 0; x < N; x++)
     {
-        for (int y = 0; y < N; y++)
+        for (element y = 0; y < N; y++)
         {
-            for (int z = 0; z < N; z++)
+            for (element z = 0; z < N; z++)
             {
                 if (op(s, op(s, x, y), z) != op(s, op(s, x, z), op(s, y, z)))
                     return false;
@@ -343,9 +380,9 @@ Cell chooseNextUnassignedCell(const State& s)
     // TODO** Possibly store the previous filled in cell for quicker selection
     Cell next{-1, -1};
 
-    for (int row = 0; row < N; ++row)
+    for (element row = 0; row < N; ++row)
     {
-        for (int col = 0; col < N; ++col)
+        for (element col = 0; col < N; ++col)
         {
             if (isAssigned(s, row, col))
                 continue;
@@ -361,7 +398,8 @@ Cell chooseNextUnassignedCell(const State& s)
 std::vector<State> generateCandidates(const State& s, const Cell& cell)
 {
     std::vector<State> out;
-    for (int value = 0; value < N; ++value)
+    out.reserve(N);
+    for (element value = 0; value < N; ++value)
     {
         State child = s;
         setCell(child, cell.row, cell.col, value);
@@ -497,9 +535,9 @@ std::vector<State> buildInitialRoots()
     State s;
     s.assignedCount = 0;
 
-    for (int i = 0; i < N; ++i)
+    for (element i = 0; i < N; ++i)
     {
-        for (int j = 0; j < N; ++j)
+        for (element j = 0; j < N; ++j)
         {
             if (i == j)
             {
@@ -519,6 +557,8 @@ std::vector<State> buildInitialRoots()
 
 void searchHybrid()
 {
+    auto start = std::chrono::high_resolution_clock::now();
+
     constexpr int GPU_TRIGGER = 1024;
     constexpr int GPU_BATCH_SIZE = 1024;
 
@@ -579,36 +619,33 @@ void searchHybrid()
             }
         // }
     }
+    auto end = std::chrono::high_resolution_clock::now();
+    std::chrono::duration<double> elapsed = end - start;
 
     std::cout << "completed quandle states found: " << completeStates.size() << '\n';
     for (size_t i = 0; i < completeStates.size(); ++i)
     {
         const State& q = completeStates[i];
         std::cout << "State " << i << ":" << '\n';
-        for (int row = 0; row < N; ++row)
+        for (element row = 0; row < N; ++row)
         {
-            for (int col = 0; col < N; ++col)
+            for (element col = 0; col < N; ++col)
             {
-                std::cout << q.table[stateIndex(row, col)] << ' ';
+                std::cout << static_cast<int>(q.table[stateIndex(row, col)]) << ' ';
             }
             std::cout << '\n';
         }
         std::cout << '\n';
     }
     std::cout << "Total states explored: " << statesExplored << "\n";
+    std::cout << "Elapsed time: " << elapsed.count() << " seconds\n";
 }
 
 int main()
 {
     std::cout << "Running hybrid CPU/GPU quandle backtracking search\n";
 
-    auto start = std::chrono::high_resolution_clock::now();
-
     searchHybrid();
-    
-    auto end = std::chrono::high_resolution_clock::now();
-    std::chrono::duration<double> elapsed = end - start;
-    std::cout << "Elapsed time: " << elapsed.count() << " seconds\n";
 
     return 0;
 }
