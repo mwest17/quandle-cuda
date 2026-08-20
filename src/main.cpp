@@ -1,6 +1,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <array>
 #include <chrono>
 #include <cstdint>
 #include <iostream>
@@ -9,7 +10,7 @@
 #include <unordered_set>
 #include <vector>
 
-constexpr int N = 3;
+constexpr int N = 8;
 constexpr int TABLE_SIZE = N * N;
 constexpr int MAX_CHILDREN_PER_THREAD = N;
 
@@ -47,6 +48,11 @@ struct Result
     Kind kind = INVALID;
     State state{};
 };
+
+
+
+void printQuandle(const State& s);
+
 
 __host__ __device__ inline index stateIndex(element row, element col)
 {
@@ -317,6 +323,217 @@ __host__ __device__ inline bool isFeasible(State& s)
 inline bool isComplete(const State& s)
 {
     return s.assignedCount == TABLE_SIZE;
+}
+
+bool areIsomorphic(const State& first, const State& second)
+{
+    if (!isComplete(first) || !isComplete(second))
+        return false;
+
+    for (element row = 0; row < N; ++row)
+    {
+        for (element col = 0; col < N; ++col)
+        {
+            const element firstValue = op(first, row, col);
+            const element secondValue = op(second, row, col);
+            if (firstValue < 0 || firstValue >= N || secondValue < 0 || secondValue >= N)
+                return false;
+        }
+    }
+
+    using Signature = std::array<int, N + 1>;
+    auto translationSignature = [](const State& state, element elementValue, bool right) {
+        Signature signature{};
+        bool imageSeen[N] = {};
+
+        for (element input = 0; input < N; ++input)
+        {
+            const element image = right
+                ? static_cast<element>(op(state, input, elementValue))
+                : static_cast<element>(op(state, elementValue, input));
+            if (image < 0 || image >= N || imageSeen[image])
+                return Signature{};
+            imageSeen[image] = true;
+        }
+
+        bool visited[N] = {};
+        for (element input = 0; input < N; ++input)
+        {
+            if (visited[input])
+                continue;
+
+            int cycleLength = 0;
+            element current = input;
+            do
+            {
+                visited[current] = true;
+                current = right
+                    ? static_cast<element>(op(state, current, elementValue))
+                    : static_cast<element>(op(state, elementValue, current));
+                ++cycleLength;
+            } while (current != input);
+            ++signature[cycleLength];
+        }
+        return signature;
+    };
+
+    auto orbitSize = [](const State& state, element start) {
+        bool visited[N] = {};
+        element queue[N] = {start};
+        int head = 0;
+        int tail = 1;
+        visited[start] = true;
+
+        while (head < tail)
+        {
+            const element current = queue[head++];
+            for (element actingElement = 0; actingElement < N; ++actingElement)
+            {
+                const element next = static_cast<element>(op(state, current, actingElement));
+                const element previous = op_inv(state, current, actingElement);
+                if (!visited[next])
+                {
+                    visited[next] = true;
+                    queue[tail++] = next;
+                }
+                if (previous >= 0 && !visited[previous])
+                {
+                    visited[previous] = true;
+                    queue[tail++] = previous;
+                }
+            }
+        }
+        return tail;
+    };
+
+    Signature firstRowSignatures[N]{};
+    Signature secondRowSignatures[N]{};
+    Signature firstColumnSignatures[N]{};
+    Signature secondColumnSignatures[N]{};
+    int firstOrbitSizes[N]{};
+    int secondOrbitSizes[N]{};
+
+    for (element value = 0; value < N; ++value)
+    {
+        firstRowSignatures[value] = translationSignature(first, value, false);
+        secondRowSignatures[value] = translationSignature(second, value, false);
+        firstColumnSignatures[value] = translationSignature(first, value, true);
+        secondColumnSignatures[value] = translationSignature(second, value, true);
+        firstOrbitSizes[value] = orbitSize(first, value);
+        secondOrbitSizes[value] = orbitSize(second, value);
+    }
+
+    auto sameMultiset = [](const auto& firstValues, const auto& secondValues) {
+        bool matched[N] = {};
+        for (element firstIndex = 0; firstIndex < N; ++firstIndex)
+        {
+            bool found = false;
+            for (element secondIndex = 0; secondIndex < N; ++secondIndex)
+            {
+                if (!matched[secondIndex] && firstValues[firstIndex] == secondValues[secondIndex])
+                {
+                    matched[secondIndex] = true;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                return false;
+        }
+        return true;
+    };
+
+    if (!sameMultiset(firstRowSignatures, secondRowSignatures) ||
+        !sameMultiset(firstColumnSignatures, secondColumnSignatures) ||
+        !sameMultiset(firstOrbitSizes, secondOrbitSizes))
+    {
+        return false;
+    }
+
+    int mapping[N];
+    int inverseMapping[N];
+    for (element value = 0; value < N; ++value)
+    {
+        mapping[value] = -1;
+        inverseMapping[value] = -1;
+    }
+
+    auto compatible = [&](element source, element target) {
+        if (firstRowSignatures[source] != secondRowSignatures[target] ||
+            firstColumnSignatures[source] != secondColumnSignatures[target] ||
+            firstOrbitSizes[source] != secondOrbitSizes[target])
+        {
+            return false;
+        }
+
+        for (element other = 0; other < N; ++other)
+        {
+            if (mapping[other] == -1)
+                continue;
+
+            const element sourceResults[2] = {
+                static_cast<element>(op(first, source, other)),
+                static_cast<element>(op(first, other, source))};
+            const element targetResults[2] = {
+                static_cast<element>(op(second, target, mapping[other])),
+                static_cast<element>(op(second, mapping[other], target))};
+
+            for (int direction = 0; direction < 2; ++direction)
+            {
+                const element sourceResult = sourceResults[direction];
+                const element targetResult = targetResults[direction];
+                if (mapping[sourceResult] != -1 && mapping[sourceResult] != targetResult)
+                    return false;
+                if (inverseMapping[targetResult] != -1 && inverseMapping[targetResult] != sourceResult)
+                    return false;
+            }
+        }
+        return true;
+    };
+
+    auto search = [&](auto&& self, int mappedCount) -> bool {
+        if (mappedCount == N)
+            return true;
+
+        element source = -1;
+        int bestCandidateCount = N + 1;
+        for (element candidateSource = 0; candidateSource < N; ++candidateSource)
+        {
+            if (mapping[candidateSource] != -1)
+                continue;
+
+            int candidateCount = 0;
+            for (element candidateTarget = 0; candidateTarget < N; ++candidateTarget)
+            {
+                if (inverseMapping[candidateTarget] == -1 && compatible(candidateSource, candidateTarget))
+                    ++candidateCount;
+            }
+            if (candidateCount < bestCandidateCount)
+            {
+                source = candidateSource;
+                bestCandidateCount = candidateCount;
+            }
+        }
+
+        if (source == -1 || bestCandidateCount == 0)
+            return false;
+
+        for (element target = 0; target < N; ++target)
+        {
+            if (inverseMapping[target] != -1 || !compatible(source, target))
+                continue;
+
+            mapping[source] = target;
+            inverseMapping[target] = source;
+            if (self(self, mappedCount + 1))
+                return true;
+            mapping[source] = -1;
+            inverseMapping[target] = -1;
+        }
+        return false;
+    };
+
+    return search(search, 0);
 }
 
 #ifdef COHEN
@@ -606,7 +823,20 @@ void searchHybrid()
             {
                 if (isValidQuandle(s))
                 {
-                    completeStates.push_back(s);
+                    bool isDuplicate = false;
+                    for (const State& existing : completeStates)
+                    {
+                        if (areIsomorphic(existing, s))
+                        {
+                            isDuplicate = true;
+                            break;
+                        }
+                    }
+
+                    if (!isDuplicate)
+                    {
+                        completeStates.push_back(s);
+                    }
                 }
                 continue;
             }
@@ -622,7 +852,6 @@ void searchHybrid()
     auto end = std::chrono::high_resolution_clock::now();
     std::chrono::duration<double> elapsed = end - start;
 
-    std::cout << "completed quandle states found: " << completeStates.size() << '\n';
     for (size_t i = 0; i < completeStates.size(); ++i)
     {
         const State& q = completeStates[i];
@@ -638,11 +867,85 @@ void searchHybrid()
         std::cout << '\n';
     }
     std::cout << "Total states explored: " << statesExplored << "\n";
+    std::cout << "Quandles found: " << completeStates.size() << '\n';
     std::cout << "Elapsed time: " << elapsed.count() << " seconds\n";
+}
+
+void isomorphismTest()
+{
+    std::cout << "Running isomorphism test 1...\n";
+    State s1;
+    s1.assignedCount = 9;
+    s1.table[0] = 0; s1.table[1] = 1; s1.table[2] = 2;
+    s1.table[3] = 1; s1.table[4] = 2; s1.table[5] = 0;
+    s1.table[6] = 2; s1.table[7] = 0; s1.table[8] = 1;
+
+    State s2;
+    s2.assignedCount = 9;
+    s2.table[0] = 0; s2.table[1] = 2; s2.table[2] = 1;
+    s2.table[3] = 2; s2.table[4] = 1; s2.table[5] = 0;
+    s2.table[6] = 1; s2.table[7] = 0; s2.table[8] = 2;
+
+    printQuandle(s1);
+    std::cout << std::endl;
+    printQuandle(s2);
+
+    bool isomorphic = areIsomorphic(s1, s2);
+    std::cout << ((isomorphic)? "Isomorphic" : "Not Isomorphic") << std::endl;
+    std::cout << "Test 1 isomorphic: " << ((isomorphic == false)? "Pass" : "Fail") << std::endl;
+
+
+    std::cout << "Running isomorphism test 2...\n";
+    s1.table[0] = 0; s1.table[1] = 1; s1.table[2] = 2;
+    s1.table[3] = 1; s1.table[4] = 2; s1.table[5] = 0;
+    s1.table[6] = 2; s1.table[7] = 0; s1.table[8] = 1;
+
+    s2.table[0] = 0; s2.table[1] = 1; s2.table[2] = 2;
+    s2.table[3] = 1; s2.table[4] = 2; s2.table[5] = 0;
+    s2.table[6] = 2; s2.table[7] = 0; s2.table[8] = 1;
+
+    printQuandle(s1);
+    std::cout << std::endl;
+    printQuandle(s2);
+
+    isomorphic = areIsomorphic(s1, s2);
+    std::cout << ((isomorphic)? "Isomorphic" : "Not Isomorphic") << std::endl;
+    std::cout << "Test 2 isomorphic: " << ((isomorphic == true)? "Pass" : "Fail") << std::endl;
+
+    
+    std::cout << "Running isomorphism test 3...\n";
+    s1.table[0] = 0; s1.table[1] = 0; s1.table[2] = 1;
+    s1.table[3] = 1; s1.table[4] = 1; s1.table[5] = 0;
+    s1.table[6] = 2; s1.table[7] = 2; s1.table[8] = 2;
+
+    s2.table[0] = 0; s2.table[1] = 0; s2.table[2] = 0;
+    s2.table[3] = 2; s2.table[4] = 1; s2.table[5] = 1;
+    s2.table[6] = 1; s2.table[7] = 2; s2.table[8] = 2;
+
+    printQuandle(s1);
+    std::cout << std::endl;
+    printQuandle(s2);
+
+    isomorphic = areIsomorphic(s1, s2);
+    std::cout << ((isomorphic)? "Isomorphic" : "Not Isomorphic") << std::endl;
+    std::cout << "Test 3 isomorphic: " << ((isomorphic == true)? "Pass" : "Fail") << std::endl;
+}
+
+void printQuandle(const State& s)
+{
+    for (element row = 0; row < N; ++row)
+    {
+        for (element col = 0; col < N; ++col)
+        {
+            std::cout << static_cast<int>(op(s, row, col)) << ' ';
+        }
+        std::cout << '\n';
+    }
 }
 
 int main()
 {
+    // isomorphismTest();
     std::cout << "Running hybrid CPU/GPU quandle backtracking search\n";
 
     searchHybrid();
