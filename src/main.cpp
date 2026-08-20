@@ -57,6 +57,8 @@ struct Result
 
 void printOrbits(const std::vector<Orbit>& orbits);
 void printQuandle(const State& s);
+void stateToVector(const State& s, std::vector<element>& vec);
+inline bool isComplete(const State& s);
 
 
 __host__ __device__ inline index stateIndex(element row, element col)
@@ -87,8 +89,6 @@ __host__ __device__ inline index op_inv(const State& s, element z, element y)
     }
     return x;
 }   
-
-inline bool isComplete(const State& s);
 
 std::vector<Orbit> determineOrbits(const State& s)
 {
@@ -379,8 +379,8 @@ __host__ __device__ inline bool isFeasible(State& s)
         result = ruleFive(s, row, col, k);
 
 #ifdef COHEN
-    if (result)
-        result = cohenParitalCheck();
+    // if (result)
+        // result = cohenParitalCheck();
 #endif
 
     return result;
@@ -389,6 +389,167 @@ __host__ __device__ inline bool isFeasible(State& s)
 inline bool isComplete(const State& s)
 {
     return s.assignedCount == TABLE_SIZE;
+}
+
+bool areIsomorphic(const std::vector<element>& first, const std::vector<element>& second)
+{
+    if (first.size() != second.size())
+        return false;
+
+    const size_t tableSize = first.size();
+    size_t order = 0;
+    while (order * order < tableSize)
+        ++order;
+
+    if (order * order != tableSize)
+        return false;
+
+    for (size_t value = 0; value < tableSize; ++value)
+    {
+        if (first[value] < 0 || first[value] >= order ||
+            second[value] < 0 || second[value] >= order)
+        {
+            return false;
+        }
+    }
+
+    auto translationSignature = [order](const std::vector<element>& table, size_t value, bool right) {
+        std::vector<int> signature(order + 1);
+        bool imageSeen[ORDER] = {};
+        for (size_t input = 0; input < order; ++input)
+        {
+            const element image = right
+                ? table[input * order + value]
+                : table[value * order + input];
+            if (image < 0 || image >= order || imageSeen[image])
+                return signature;
+            imageSeen[image] = true;
+        }
+
+        bool visited[ORDER] = {};
+        for (size_t input = 0; input < order; ++input)
+        {
+            if (visited[input])
+                continue;
+
+            int cycleLength = 0;
+            size_t current = input;
+            do
+            {
+                visited[current] = true;
+                current = right
+                    ? table[current * order + value]
+                    : table[value * order + current];
+                ++cycleLength;
+            } while (current != input);
+            ++signature[cycleLength];
+        }
+        return signature;
+    };
+
+    auto orbitSize = [order](const std::vector<element>& table, size_t start) {
+        bool visited[ORDER] = {};
+        size_t queue[ORDER] = {start};
+        size_t head = 0;
+        size_t tail = 1;
+        visited[start] = true;
+
+        while (head < tail)
+        {
+            const size_t current = queue[head++];
+            for (size_t actingElement = 0; actingElement < order; ++actingElement)
+            {
+                const size_t next = table[current * order + actingElement];
+                size_t previous = 0;
+                while (table[previous * order + actingElement] != current)
+                    ++previous;
+
+                if (!visited[next])
+                {
+                    visited[next] = true;
+                    queue[tail++] = next;
+                }
+                if (!visited[previous])
+                {
+                    visited[previous] = true;
+                    queue[tail++] = previous;
+                }
+            }
+        }
+        return tail;
+    };
+
+    std::vector<std::vector<int>> firstRowSignatures(order);
+    std::vector<std::vector<int>> secondRowSignatures(order);
+    std::vector<std::vector<int>> firstColumnSignatures(order);
+    std::vector<std::vector<int>> secondColumnSignatures(order);
+    std::vector<size_t> firstOrbitSizes(order);
+    std::vector<size_t> secondOrbitSizes(order);
+
+    for (size_t value = 0; value < order; ++value)
+    {
+        firstRowSignatures[value] = translationSignature(first, value, false);
+        secondRowSignatures[value] = translationSignature(second, value, false);
+        firstColumnSignatures[value] = translationSignature(first, value, true);
+        secondColumnSignatures[value] = translationSignature(second, value, true);
+        firstOrbitSizes[value] = orbitSize(first, value);
+        secondOrbitSizes[value] = orbitSize(second, value);
+    }
+
+    auto sameMultiset = [](const auto& firstValues, const auto& secondValues) {
+        std::vector<bool> matched(secondValues.size());
+        for (size_t firstIndex = 0; firstIndex < firstValues.size(); ++firstIndex)
+        {
+            bool found = false;
+            for (size_t secondIndex = 0; secondIndex < secondValues.size(); ++secondIndex)
+            {
+                if (!matched[secondIndex] && firstValues[firstIndex] == secondValues[secondIndex])
+                {
+                    matched[secondIndex] = true;
+                    found = true;
+                    break;
+                }
+            }
+            if (!found)
+                return false;
+        }
+        return true;
+    };
+
+    if (!sameMultiset(firstRowSignatures, secondRowSignatures) ||
+        !sameMultiset(firstColumnSignatures, secondColumnSignatures) ||
+        !sameMultiset(firstOrbitSizes, secondOrbitSizes))
+    {
+        return false;
+    }
+
+    std::vector<element> mapping(order);
+    for (element value = 0; value < order; ++value)
+        mapping[value] = value;
+
+    do
+    {
+        bool isCompatible = true;
+        for (element row = 0; row < order && isCompatible; ++row)
+        {
+            for (element col = 0; col < order; ++col)
+            {
+                const element firstValue = first[row * order + col];
+                const element mappedValue = mapping[firstValue];
+                const element secondValue = second[mapping[row] * order + mapping[col]];
+                if (mappedValue != secondValue)
+                {
+                    isCompatible = false;
+                    break;
+                }
+            }
+        }
+
+        if (isCompatible)
+            return true;
+    } while (std::next_permutation(mapping.begin(), mapping.end()));
+
+    return false;
 }
 
 bool areIsomorphic(const State& first, const State& second)
@@ -620,36 +781,66 @@ inline bool isCohen(const State& s)
             return false;
     }
 
-    const index SUB_QUANDLE_SIZE = ORDER - firstOrbitSize;
-    std::array<state_t<SUB_QUANDLE_SIZE>, orbits.size()> orbitStates;
+    const index quotientSize = ORDER - firstOrbitSize;
+    using QuotientTable = std::vector<element>;
+    std::vector<QuotientTable> quotientTables;
+    quotientTables.reserve(orbits.size());
 
-    for (int i = 0; i < orbits.size(); ++i)
+    for (const Orbit& orbit : orbits)
     {
-        const Orbit& orbit = orbits[i];
-        state_t<SUB_QUANDLE_SIZE>& orbitSubquandle = orbitStates[i];
+        bool removed[ORDER] = {};
+        for (element orbitIndex = 0; orbitIndex < orbit.size; ++orbitIndex)
+            removed[orbit.orb[orbitIndex]] = true;
 
-        orbitSubquandle.assignedCount = SUB_QUANDLE_SIZE;
+        element oldToNew[ORDER];
+        for (element value = 0; value < ORDER; ++value)
+            oldToNew[value] = -1;
 
-        for (int j = 0; j < ORDER; j++)
+        element nextIndex = 0;
+        for (element value = 0; value < ORDER; ++value)
         {
-            if 
+            if (!removed[value])
+                oldToNew[value] = nextIndex++;
         }
 
-        // for (int j = 0; j < firstOrbitSize; ++j)
-        // {
-        //     element row = orbit.orb[j];
-        //     for (element col = 0; col < ORDER; ++col)
-        //     {
-        //         if (std::find(std::begin(orbit.orb), std::end(orbit.orb), col) == std::end(orbit.orb))
-        //         {
-        //             setCell(orbitState, j, col, op(s, row, col));
-        //         }
-        //     }
-        // }
-    }
-    // Check if s / orb is isomoprhism to all others
-    // Just do the half matrix pyramid approach to compare
+        QuotientTable quotient(static_cast<size_t>(quotientSize) * quotientSize, -1);
+        for (element row = 0; row < ORDER; ++row)
+        {
+            if (removed[row])
+                continue;
 
+            for (element col = 0; col < ORDER; ++col)
+            {
+                if (removed[col])
+                    continue;
+
+                const element value = static_cast<element>(op(s, row, col));
+                if (value < 0 || value >= ORDER || removed[value])
+                    return false;
+
+                const element newRow = oldToNew[row];
+                const element newCol = oldToNew[col];
+                const element newValue = oldToNew[value];
+                if (newRow < 0 || newCol < 0 || newValue < 0)
+                    return false;
+
+                quotient[static_cast<size_t>(newRow) * quotientSize + newCol] = newValue;
+            }
+        }
+
+        quotientTables.push_back(std::move(quotient));
+    }
+
+    for (int i = 0; i < quotientTables.size(); ++i)
+    {
+        for (int j = i + 1; j < quotientTables.size(); ++j)
+        {
+            if (!areIsomorphic(quotientTables.at(i), quotientTables.at(j)))
+                return false;
+        }
+    }
+
+    return true;
 }
 #endif
 
@@ -929,6 +1120,11 @@ void searchHybrid()
             {
                 if (isValidQuandle(s))
                 {
+                    #ifdef COHEN
+                    if (!isCohen(s))
+                        continue;
+                    #endif
+                    
                     bool isDuplicate = false;
                     for (const State& existing : completeStates)
                     {
@@ -960,21 +1156,25 @@ void searchHybrid()
 
     for (size_t i = 0; i < completeStates.size(); ++i)
     {
-        const State& q = completeStates[i];
         std::cout << "State " << i << ":" << '\n';
-        for (element row = 0; row < ORDER; ++row)
-        {
-            for (element col = 0; col < ORDER; ++col)
-            {
-                std::cout << static_cast<int>(q.table[stateIndex(row, col)]) << ' ';
-            }
-            std::cout << '\n';
-        }
+        printQuandle(completeStates[i]);
         std::cout << '\n';
     }
     std::cout << "Total states explored: " << statesExplored << "\n";
     std::cout << "Quandles found: " << completeStates.size() << '\n';
     std::cout << "Elapsed time: " << elapsed.count() << " seconds\n";
+}
+
+void stateToVector(const State& s, std::vector<element>& vec)
+{
+    vec.resize(TABLE_SIZE);
+    for (element row = 0; row < ORDER; ++row)
+    {
+        for (element col = 0; col < ORDER; ++col)
+        {
+            vec[stateIndex(row, col)] = s.table[stateIndex(row, col)];
+        }
+    }
 }
 
 void isomorphismTest()
@@ -992,6 +1192,9 @@ void isomorphismTest()
     s2.table[3] = 2; s2.table[4] = 1; s2.table[5] = 0;
     s2.table[6] = 1; s2.table[7] = 0; s2.table[8] = 2;
 
+    std::vector<element> s1Vec;
+    std::vector<element> s2Vec;
+
     printQuandle(s1);
     std::cout << std::endl;
     printQuandle(s2);
@@ -999,6 +1202,13 @@ void isomorphismTest()
     bool isomorphic = areIsomorphic(s1, s2);
     std::cout << ((isomorphic)? "Isomorphic" : "Not Isomorphic") << std::endl;
     std::cout << "Test 1 isomorphic: " << ((isomorphic == false)? "Pass" : "Fail") << std::endl;
+
+    stateToVector(s1, s1Vec);
+    stateToVector(s2, s2Vec);
+
+    bool isomorphicVec = areIsomorphic(s1Vec, s2Vec);
+    std::cout << ((isomorphicVec)? "Isomorphic" : "Not Isomorphic") << std::endl;
+    std::cout << "Test 1 isomorphic (vector): " << ((isomorphicVec == false)? "Pass" : "Fail") << std::endl;
 
 
     std::cout << "Running isomorphism test 2...\n";
@@ -1018,6 +1228,13 @@ void isomorphismTest()
     std::cout << ((isomorphic)? "Isomorphic" : "Not Isomorphic") << std::endl;
     std::cout << "Test 2 isomorphic: " << ((isomorphic == true)? "Pass" : "Fail") << std::endl;
 
+    stateToVector(s1, s1Vec);
+    stateToVector(s2, s2Vec);
+    
+    isomorphicVec = areIsomorphic(s1Vec, s2Vec);
+    std::cout << ((isomorphicVec)? "Isomorphic" : "Not Isomorphic") << std::endl;
+    std::cout << "Test 2 isomorphic (vector): " << ((isomorphicVec == true)? "Pass" : "Fail") << std::endl;
+
     
     std::cout << "Running isomorphism test 3...\n";
     s1.table[0] = 0; s1.table[1] = 0; s1.table[2] = 1;
@@ -1035,6 +1252,13 @@ void isomorphismTest()
     isomorphic = areIsomorphic(s1, s2);
     std::cout << ((isomorphic)? "Isomorphic" : "Not Isomorphic") << std::endl;
     std::cout << "Test 3 isomorphic: " << ((isomorphic == true)? "Pass" : "Fail") << std::endl;
+
+    stateToVector(s1, s1Vec);
+    stateToVector(s2, s2Vec);
+    
+    isomorphicVec = areIsomorphic(s1Vec, s2Vec);
+    std::cout << ((isomorphicVec)? "Isomorphic" : "Not Isomorphic") << std::endl;
+    std::cout << "Test 3 isomorphic (vector): " << ((isomorphicVec == true)? "Pass" : "Fail") << std::endl;
 }
 
 void testDetermineOrbits()
@@ -1070,6 +1294,38 @@ void testDetermineOrbits()
     printOrbits(orbits);
 }
 
+#ifdef COHEN
+void testIsCohen()
+{
+    std::cout << "Running isCohen test 1...\n";
+    State s;
+    s.assignedCount = 9;
+    s.table[0] = 0; s.table[1] = 1; s.table[2] = 2;
+    s.table[3] = 1; s.table[4] = 2; s.table[5] = 0;
+    s.table[6] = 2; s.table[7] = 0; s.table[8] = 1;
+
+    printQuandle(s);
+    bool cohen = isCohen(s);
+    std::cout << "Is Cohen: " << (cohen ? "Yes" : "No") << std::endl;
+
+    std::cout << "\nRunning isCohen test 2...\n";
+    s.table[0] = 0; s.table[1] = 0; s.table[2] = 0;
+    s.table[3] = 1; s.table[4] = 1; s.table[5] = 1;
+    s.table[6] = 2; s.table[7] = 2; s.table[8] = 2;
+    printQuandle(s);
+    cohen = isCohen(s);
+    std::cout << "Is Cohen: " << (cohen ? "Yes" : "No") << std::endl;
+
+    std::cout << "\nRunning isCohen test 3...\n";
+    s.table[0] = 0; s.table[1] = 0; s.table[2] = 1;
+    s.table[3] = 1; s.table[4] = 1; s.table[5] = 0;
+    s.table[6] = 2; s.table[7] = 2; s.table[8] = 2;
+    printQuandle(s);
+    cohen = isCohen(s);
+    std::cout << "Is Cohen: " << (cohen ? "Yes" : "No") << std::endl;
+}
+#endif
+
 void printOrbits(const std::vector<Orbit>& orbits)
 {
     std::cout << "Orbits: ";
@@ -1101,11 +1357,14 @@ void printQuandle(const State& s)
 
 int main()
 {
-    // isomorphismTest();
-    // testDetermineOrbits();
-
+#ifdef TEST
+    isomorphismTest();
+    testDetermineOrbits();
+    testIsCohen();
+#else
     std::cout << "Running hybrid CPU/GPU quandle backtracking search\n";
     searchHybrid();
+#endif
 
     return 0;
 }
