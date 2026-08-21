@@ -4,13 +4,16 @@
 #include <array>
 #include <chrono>
 #include <cstdint>
+#include <cmath>
+#include <fstream>
 #include <iostream>
 #include <limits>
+#include <sstream>
 #include <string>
 #include <unordered_set>
 #include <vector>
 
-constexpr int ORDER = 3;
+constexpr int ORDER = 12;
 constexpr int TABLE_SIZE = ORDER * ORDER;
 constexpr int MAX_CHILDREN_PER_THREAD = ORDER;
 
@@ -36,6 +39,9 @@ struct state_t
     index assignedCount = 0;
     element table[N * N] = {-1}; // Bitpack the structure maybe? Only if I run out of memory
     Cell lastEntered = {-1, -1};
+#ifdef COHEN
+    index orbitSize = 0;
+#endif
 };
 
 typedef state_t<ORDER> State;
@@ -57,6 +63,7 @@ struct Result
 
 void printOrbits(const std::vector<Orbit>& orbits);
 void printQuandle(const State& s);
+void printQuandle(const std::vector<element>& quandle);
 void stateToVector(const State& s, std::vector<element>& vec);
 inline bool isComplete(const State& s);
 
@@ -361,6 +368,28 @@ __host__ __device__ inline bool isFeasible(State& s)
     element col = s.lastEntered.col;
     element k = op(s, row, col);
 
+#ifdef COHEN
+    if ((k / s.orbitSize) != (row / s.orbitSize))
+        return false;
+
+    // Can also ensure a row isn't about to become trivial
+    if (k == row && row == ORDER - 1)
+    {
+        bool trivial = true;
+        for (int i = 0; i < ORDER; i++)
+        {
+            if (op(s, row, i) != k)
+            {
+                trivial = false;
+                break;
+            }
+        }
+
+        if (trivial)
+            return false;
+    }
+#endif
+
     bool result = verifyPartialAxiomTwo(s, row, col, k);
 
     if (result)
@@ -377,11 +406,6 @@ __host__ __device__ inline bool isFeasible(State& s)
 
     if (result)
         result = ruleFive(s, row, col, k);
-
-#ifdef COHEN
-    // if (result)
-        // result = cohenParitalCheck();
-#endif
 
     return result;
 }
@@ -1043,9 +1067,134 @@ std::vector<State> generateCandidates(const State& s, const Cell& cell)
 //     return filtered;
 // }
 
+std::vector<std::vector<element>> parseQuandleFile(std::string filename)
+{
+    std::vector<std::vector<element>> quandleData;
+
+    std::ifstream file(filename);
+    if (!file.is_open())
+    {
+        std::cout << "Error opening file: " << filename << std::endl;
+        return quandleData;
+    }
+
+    std::vector<element> quandle;
+    std::string line;
+    while (std::getline(file, line))
+    {
+        if (line.empty())
+        {
+            quandleData.push_back(quandle);
+            quandle.clear();
+        }
+        else if (line[0] == '[' && line[1] != '{')
+        {
+            std::istringstream iss(line.substr(1, line.find(']') - 1));
+            int tmp;
+            // element value;
+            while (iss >> tmp)
+            {
+                quandle.push_back(tmp - 1);
+            }
+        }
+    }
+    return quandleData;
+}
+
+std::vector<std::vector<element>> readQuandlesFromFile(int n)
+{
+    // First get cohen of order n
+    std::vector<std::vector<element>> quandles = parseQuandleFile("../cohen/cohen" + std::to_string(n) + ".txt");
+
+    // Then get connected of order n
+    std::vector<std::vector<element>> connectedQuandles = parseQuandleFile("../connected/connected" + std::to_string(n) + ".txt");
+
+    // Join the two vectors
+    quandles.insert(quandles.end(), connectedQuandles.begin(), connectedQuandles.end());
+
+    return quandles;
+}
+
 std::vector<State> buildInitialRoots()
 {
     std::vector<State> roots;
+
+    std::vector<int> possibleOrbitSizes;
+
+#ifdef COHEN
+    State trivial;
+    trivial.assignedCount = TABLE_SIZE;
+    trivial.orbitSize = 1;
+    for (int i = 0; i < ORDER; i++) // Add trivial to roots as it is always cohen and would be skipped otherwise
+    {
+        for (int j = 0; j < ORDER; j++)
+        {
+            trivial.table[stateIndex(i, j)] = i;
+        }
+    }
+    roots.push_back(std::move(trivial));
+
+    for (int size = 2; size < ORDER; ++size)
+    {
+        if (ORDER % size == 0)
+            possibleOrbitSizes.push_back(size);
+    }
+
+#ifdef TEST
+    std::cout << "Possible orbit sizes: ";
+    for (int size : possibleOrbitSizes)
+    {
+        std::cout << size << " "; 
+    }
+    std::cout << std::endl;
+#endif
+
+    for (int orbitSize : possibleOrbitSizes)
+    {
+        // read quandles of that order from file
+        std::vector<std::vector<element>> quandleData = readQuandlesFromFile(orbitSize);
+
+#ifdef TEST
+        std::cout << "Orbit Size: " << orbitSize << std::endl;
+        std::cout << "Number of possible orbits: " << quandleData.size() << std::endl;
+#endif
+
+        for (std::vector<element> quandle : quandleData)
+        {
+            if (quandle.size() < 1)
+                continue;
+
+            const index numOrbits = ORDER / orbitSize;
+            State s;
+            s.assignedCount = (orbitSize * orbitSize) * (numOrbits);
+            s.orbitSize = orbitSize;
+            std::fill_n(s.table, TABLE_SIZE, -1);
+
+#ifdef TEST
+            printQuandle(quandle);
+            std::cout << "Num Orbits: " << numOrbits << std::endl;
+#endif
+
+            // insert each quandle as the orbit of a state
+            for (int i = 0; i < numOrbits; i++)
+            {
+                // insert the quandle as the orbit of the state
+                index offset = i * orbitSize;
+
+                for (element row = 0; row < orbitSize; row++)
+                {
+                    for (element col = 0; col < orbitSize; col++)
+                    {
+                        // std::cout << "(" << static_cast<int>(row) << ", " << static_cast<int>(col) << ") " << static_cast<int>(quandle[row * orbitSize + col]) << std::endl;
+                        s.table[stateIndex(row + offset, col + offset)] = quandle[row * orbitSize + col] + offset;
+                    }
+                }
+            }
+            roots.push_back(std::move(s));
+        }
+    }
+#else
+    // TODO** Update to fill in orbits like the Cohen init
     State s;
     s.assignedCount = 0;
 
@@ -1066,6 +1215,8 @@ std::vector<State> buildInitialRoots()
     }
 
     roots.push_back(s);
+#endif
+
     return roots;
 }
 
@@ -1326,6 +1477,29 @@ void testIsCohen()
 }
 #endif
 
+void testReadFromFile()
+{
+    std::vector<std::vector<element>> quandles = readQuandlesFromFile(ORDER);
+
+    for (const std::vector<element>& quandle : quandles)
+    {
+        printQuandle(quandle);
+        std::cout << std::endl;
+    }
+}
+
+void testBuildInitialRoots()
+{
+    std::vector<State> roots = buildInitialRoots();
+
+    for (const State& root : roots)
+    {
+        std::cout << "Root state:\n";
+        printQuandle(root);
+        std::cout << std::endl;
+    }
+}
+
 void printOrbits(const std::vector<Orbit>& orbits)
 {
     std::cout << "Orbits: ";
@@ -1355,12 +1529,27 @@ void printQuandle(const State& s)
     }
 }
 
+void printQuandle(const std::vector<element>& quandle)
+{
+    int n = std::sqrt(quandle.size());
+    for (element row = 0; row < n; ++row)
+    {
+        for (element col = 0; col < n; ++col)
+        {
+            std::cout << quandle[row * n + col] + 1 << ' ';
+        }
+        std::cout << '\n';
+    }
+}
+
 int main()
 {
 #ifdef TEST
-    isomorphismTest();
-    testDetermineOrbits();
-    testIsCohen();
+    // isomorphismTest();
+    // testDetermineOrbits();
+    // testIsCohen();
+    // testReadFromFile();
+    testBuildInitialRoots();
 #else
     std::cout << "Running hybrid CPU/GPU quandle backtracking search\n";
     searchHybrid();
